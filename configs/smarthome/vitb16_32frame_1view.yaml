@@ -1,0 +1,19 @@
+# Use it for zero shot
+DATA:
+    ROOT: '/data/smarthome/cropped224x224_better/mp4'
+    TRAIN_FILE: '/data/smarthome/csvs/cropped224x224_better/cross_subject/train.csv'
+    VAL_FILE: '/data/smarthome/csvs/cropped224x224_better/cross_subject/test.csv'
+    DATASET: smarthome
+    NUM_FRAMES: 32
+    NUM_CLASSES: 31
+    LABEL_LIST: 'labels/smarthome_cs_labels.csv'
+MODEL:
+    ARCH: ViT-B/16
+TRAIN:
+    BATCH_SIZE: 4
+    ACCUMULATION_STEPS: 2
+    EPOCHS: 50
+    LR: 2.e-6
+TEST:
+    NUM_CLIP: 1
+    NUM_CROP: 1
