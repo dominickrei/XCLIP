@@ -11,6 +11,8 @@ sys.path.append("../")
 from clip.model import CLIP,LayerNorm,Transformer
 import clip
 
+from models.hyperformer import Hyperformer_Model as Hyperformer
+
 class XCLIP(CLIP):
     def __init__(self,
                  embed_dim: int,
@@ -42,6 +44,23 @@ class XCLIP(CLIP):
             context_length, vocab_size, transformer_width, transformer_heads, transformer_layers
         )
         
+        ## For the skeleton based part of the model
+        self.prompts_generator_skeleton = VideoSpecificPrompt(layers=prompts_layers, embed_dim=embed_dim, alpha=prompts_alpha,)
+        self.skeleton_logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+
+        # self.transformer_skeleton = Transformer(
+        #     width=transformer_width,
+        #     layers=transformer_layers,
+        #     heads=transformer_heads,
+        #     attn_mask=self.build_attention_mask()
+        # )
+        # self.ln_final_skeleton = LayerNorm(transformer_width)
+        # self.text_projection_skeleton = nn.Parameter(torch.empty(transformer_width, embed_dim))
+
+        print('initializing skeleton encoder')
+        self.skeleton_encoder = Hyperformer('graph.ntu_rgb_d.Graph')
+
+        ## For the visual based part of the model
         self.prompts_generator = VideoSpecificPrompt(layers=prompts_layers, embed_dim=embed_dim, alpha=prompts_alpha,)
         self.use_cache=use_cache
         self.mit = MultiframeIntegrationTransformer(T=T, embed_dim=embed_dim, layers=mit_layers,)
@@ -61,6 +80,7 @@ class XCLIP(CLIP):
             use_checkpoint=use_checkpoint,
         )
 
+        # Visual text encoder
         self.transformer = Transformer(
             width=transformer_width,
             layers=transformer_layers,
@@ -87,19 +107,29 @@ class XCLIP(CLIP):
     def encode_image(self, image):
         return self.visual(image)
 
-    def encode_text(self, text):
+    def encode_text(self, text, which_encoder='visual'): # visual or skeleton
         x = self.token_embedding(text)
         eos_indx = text.argmax(dim=-1)
         K, N1, C = x.shape
 
         x = x + self.positional_embedding
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.ln_final(x)
-        # x.shape = [batch_size, n_ctx, transformer.width]
-        # take features from the eot embedding (eot_token is the highest number in each sequence)
-        x = x[torch.arange(x.shape[0]), eos_indx] @ self.text_projection
+
+        if which_encoder == 'visual':
+            x = self.transformer(x)
+            x = x.permute(1, 0, 2)  # LND -> NLD
+            x = self.ln_final(x)
+            # x.shape = [batch_size, n_ctx, transformer.width]
+            # take features from the eot embedding (eot_token is the highest number in each sequence)
+            x = x[torch.arange(x.shape[0]), eos_indx] @ self.text_projection
+        # else:
+        #     x = self.transformer_skeleton(x)
+        #     x = x.permute(1, 0, 2)  # LND -> NLD
+        #     x = self.ln_final_skeleton(x)
+        #     # x.shape = [batch_size, n_ctx, transformer.width]
+        #     # take features from the eot embedding (eot_token is the highest number in each sequence)
+        #     x = x[torch.arange(x.shape[0]), eos_indx] @ self.text_projection_skeleton
+        
         x = x.reshape(K, -1)
         return x
 
@@ -114,7 +144,7 @@ class XCLIP(CLIP):
         cls_features = cls_features.view(b, t, -1)
         img_features = img_features.view(b,t,-1,cls_features.shape[-1])
         
-        video_features = self.mit(cls_features)
+        video_features = self.mit(cls_features) # multi-frame integration transformer forward
 
         return video_features, img_features
 
@@ -126,25 +156,36 @@ class XCLIP(CLIP):
         self.train()
         return self.cache_text_features
 
-    def forward(self, image, text):
+    def forward(self, image, text, skeleton):
+        # TODO: Fix the variable names in this function. The difference between visual-text and skeleton-text is not clear
+        skeleton_features = self.skeleton_encoder(skeleton)
+
         b = image.shape[0]
         video_features, img_features = self.encode_video(image) 
         img_features = img_features.mean(dim=1, keepdim=False)
 
+        # this block is the text encoder forward
         if self.use_cache:
             text_features = self.cache_text(text)
         else:
             text_features = self.encode_text(text)
         
-        text_features = text_features.unsqueeze(0).expand(b, -1, -1)
-        text_features = text_features + self.prompts_generator(text_features, img_features)
+        initial_text_features = text_features.unsqueeze(0).expand(b, -1, -1)
+        text_features = initial_text_features + self.prompts_generator(initial_text_features, img_features) # video-specific prompting forward
+        skeleton_text_features = initial_text_features + self.prompts_generator_skeleton(initial_text_features, skeleton_features) # skeleton-specific prompting forward
            
         video_features = video_features / video_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         logit_scale = self.logit_scale.exp()
         logits = torch.einsum("bd,bkd->bk", video_features, logit_scale * text_features)
-        
-        return logits
+
+        skeleton_text_features = skeleton_text_features / skeleton_text_features.norm(dim=-1, keepdim=True)
+        skeleton_features = skeleton_features / skeleton_features.norm(dim=-1, keepdim=True)
+        skeleton_logit_scale = self.skeleton_logit_scale.exp()
+        skeleton_features = skeleton_features.mean(dim=1)
+        skeleton_logits = torch.einsum("bd,bkd->bk", skeleton_features, skeleton_logit_scale * skeleton_text_features)
+
+        return logits, skeleton_logits
 
 
 def build_model(state_dict: dict, T=8, droppath=0., use_checkpoint=False, logger=None, prompts_alpha=1e-1, prompts_layers=2, use_cache=True, mit_layers=4,):
@@ -186,6 +227,21 @@ def build_model(state_dict: dict, T=8, droppath=0., use_checkpoint=False, logger
         if key in state_dict:
             del state_dict[key]
 
+    ### Useful debugging command: torch.all(model.transformer_skeleton.resblocks[10].mlp.c_fc.weight == model.transformer.resblocks[10].mlp.c_fc.weight)
+
+    # This is a random key, if it exists it means that the skeleton text encoder weights are included here
+    # Otherwise, we intialize the skelton text encoder with the same weights as the visual text encoder
+    if not 'transformer_skeleton.resblocks.10.mlp.c_fc.weight' in state_dict:
+        # this initializes the skeleton text encoder with the same weights as the visual text encoder
+        state_dict['ln_final_skeleton.weight'] = state_dict['ln_final.weight']
+        state_dict['ln_final_skeleton.bias'] = state_dict['ln_final.bias']
+        state_dict['text_projection_skeleton'] = state_dict['text_projection']
+
+        for key in list(state_dict.keys()):
+            # if there is a key with 'transformer' duplicate it to 'transformer_skeleton'
+            if "transformer" in key:
+                state_dict[key.replace("transformer", "transformer_skeleton")] = state_dict[key]
+
     msg = model.load_state_dict(state_dict,strict=False)
     logger.info(f"load pretrained CLIP: {msg}")
     
@@ -207,6 +263,9 @@ def load(model_path, name: str, device: Union[str, torch.device] = "cuda" if tor
             warnings.warn(f"File {model_path} is not a JIT archive. Loading as a state dict instead")
             jit = False
         state_dict = torch.load(model_path, map_location="cpu")
+
+    use_cache = False
+    warnings.warn('Hardcoded use_cache=False. Text embeddings will not be cached')
 
     model = build_model(state_dict or model.state_dict(), T=T, droppath=droppath, 
                         use_checkpoint=use_checkpoint, logger=logger,

@@ -68,6 +68,59 @@ class BaseDataset(Dataset, metaclass=ABCMeta):
 
         assert not (self.multi_class and self.sample_by_class)
 
+        # Loading Hyperformer Embeddings'
+        if 'ntu' in self.ann_file:
+            # data: N C V T M
+            # data_path = '/data/ntu/Hyperformer_processed_data/NTU60_CS.npz'  #NTU60_CVS1.npz' NTU60_CS.npz  
+            data_path = '/data/ntu/Hyperformer_processed_data/NTU120_NTU120_110-10.npz' # NTU120_NTU120_110-10.npz NTU120_NTU120_96-24.npz
+            print('Loading Hyperformer data from:', data_path)
+            npz_data = np.load(data_path)
+            hyperformer_data_train = npz_data['x_train']
+            hyperformer_label_train = np.where(npz_data['y_train'] > 0)[1]
+            # self.sample_name = ['train_' + str(i) for i in range(len(self.data))]
+            hyperformer_filename_train = [x.decode('utf-8') for x in npz_data['files_train']]
+
+            hyperformer_data_test = npz_data['x_test']
+            hyperformer_label_test = np.where(npz_data['y_test'] > 0)[1]
+            # self.sample_name = ['test_' + str(i) for i in range(len(self.data))]
+            hyperformer_filename_test = [x.decode('utf-8') for x in npz_data['files_test']]
+
+            hyperformer_data = np.concatenate((hyperformer_data_train, hyperformer_data_test), axis = 0)
+            hyperformer_label = np.concatenate((hyperformer_label_train, hyperformer_label_test), axis = 0)
+            hyperformer_filename = np.concatenate((hyperformer_filename_train, hyperformer_filename_test), axis=0)
+
+            N, T, _ = hyperformer_data.shape
+            hyperformer_data = hyperformer_data.reshape((N, T, 2, 25, 3)).transpose(0, 4, 1, 3, 2)
+
+            ## Dictionary for Hyperformer (keys:filenames; values:npz x_data)
+            self.hyperformer_data = dict(zip(hyperformer_filename, hyperformer_data))
+        elif 'smarthome' in self.ann_file:
+            # data: N C V T M
+            data_path = '/data/smarthome/smarthome_CS.npz'
+            # data_path = '/data/ntu/Hyperformer_processed_data/NTU120_NTU120_96-24.npz' # NTU120_NTU120_110-10.npz
+            npz_data = np.load(data_path)
+            hyperformer_data_train = npz_data['x_train']
+            hyperformer_label_train = np.where(npz_data['y_train'] > 0)[1]
+            # self.sample_name = ['train_' + str(i) for i in range(len(self.data))]
+            hyperformer_filename_train = [x for x in npz_data['train_filenames']] # npy strings to python strings
+
+            hyperformer_data_test = npz_data['x_test']
+            hyperformer_label_test = np.where(npz_data['y_test'] > 0)[1]
+            # self.sample_name = ['test_' + str(i) for i in range(len(self.data))]
+            hyperformer_filename_test = [x for x in npz_data['test_filenames']]
+
+            hyperformer_data = np.concatenate((hyperformer_data_train, hyperformer_data_test), axis = 0)
+            hyperformer_label = np.concatenate((hyperformer_label_train, hyperformer_label_test), axis = 0)
+            hyperformer_filename = np.concatenate((hyperformer_filename_train, hyperformer_filename_test), axis=0)
+
+            N, T, _ = hyperformer_data.shape
+            hyperformer_data = hyperformer_data.reshape((N, T, 1, 15, 3)).transpose(0, 4, 1, 3, 2)
+
+            ## Dictionary for Hyperformer (keys:filenames; values:npz x_data)
+            self.hyperformer_data = dict(zip(hyperformer_filename, hyperformer_data))
+        else:
+            raise NotImplementedError('dataset can not be built if not ntu or smarthome. (hyperformer features cant be loaded)')
+
         self.pipeline = Compose(pipeline)
         self.video_infos = self.load_annotations()
         if self.sample_by_class:
@@ -196,12 +249,33 @@ class VideoDataset(BaseDataset):
                     assert self.num_classes is not None
                     filename, label = line_split[0], line_split[1:]
                     label = list(map(int, label))
+                elif len(line_split) == 3: # assume the format is rgb_path, pose_path, label
+                    filename, pose_path, label = line_split
+                    label = int(label)
                 else:
                     filename, post_path, label = line_split
                     label = int(label)
                 if self.data_prefix is not None:
                     filename = osp.join(self.data_prefix, filename)
-                video_infos.append(dict(filename=filename, label=label, tar=self.use_tar_format))
+
+                ### Get corresponding hyperformer embedding
+                if 'ntu' in self.ann_file:
+                    # '/data/ntu/NTU60_224x224/rgb/S014C002P027R002A019_rgb.avi'
+                    _, fname = os.path.split(filename)
+                    video_identifier = fname[:-8]
+                elif 'smarthome' in self.ann_file:
+                    _, fname = os.path.split(filename)
+                    video_identifier = fname[:-4]
+                else:
+                    raise NotImplementedError('filename -> hyperformer dict index')
+                
+                if 'ntu' in self.ann_file:
+                    hformer_data = self.hyperformer_data[video_identifier]
+                elif 'smarthome' in self.ann_file:
+                    hformer_data = self.hyperformer_data[video_identifier + '_pose3d.json']
+
+                video_infos.append(dict(filename=filename, label=label, hformer_data=hformer_data, tar=self.use_tar_format))
+
         return video_infos
 
 
@@ -261,8 +335,8 @@ def build_dataloader(logger, config):
         dict(type='GrayScale', p=config.AUG.GRAY_SCALE),
         dict(type='Normalize', **img_norm_cfg),
         dict(type='FormatShape', input_format='NCHW'),
-        dict(type='Collect', keys=['imgs', 'label'], meta_keys=[]),
-        dict(type='ToTensor', keys=['imgs', 'label']),
+        dict(type='Collect', keys=['imgs', 'label', 'hformer_data'], meta_keys=[]),
+        dict(type='ToTensor', keys=['imgs', 'label', 'hformer_data']),
     ]
         
     
@@ -290,8 +364,8 @@ def build_dataloader(logger, config):
         dict(type='CenterCrop', crop_size=config.DATA.INPUT_SIZE),
         dict(type='Normalize', **img_norm_cfg),
         dict(type='FormatShape', input_format='NCHW'),
-        dict(type='Collect', keys=['imgs', 'label'], meta_keys=[]),
-        dict(type='ToTensor', keys=['imgs'])
+        dict(type='Collect', keys=['imgs', 'label', 'hformer_data'], meta_keys=[]),
+        dict(type='ToTensor', keys=['imgs', 'hformer_data'])
     ]
     if config.TEST.NUM_CROP == 3:
         val_pipeline[3] = dict(type='Resize', scale=(-1, config.DATA.INPUT_SIZE))

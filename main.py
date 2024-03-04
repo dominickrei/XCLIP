@@ -139,6 +139,7 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         label_id = batch_data["label"].cuda(non_blocking=True)
         label_id = label_id.reshape(-1)
         images = images.view((-1,config.DATA.NUM_FRAMES,3)+images.size()[-2:])
+        skeleton_sequence = batch_data["hformer_data"].cuda(non_blocking=True)
         
         if mixup_fn is not None:
             images, label_id = mixup_fn(images, label_id)
@@ -146,9 +147,12 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         if texts.shape[0] == 1:
             texts = texts.view(1, -1)
         
-        output = model(images, texts)
+        video_logits, skeleton_logits = model(images, texts, skeleton_sequence)
 
-        total_loss = criterion(output, label_id)
+        classification_loss = criterion(video_logits, label_id)
+        distillation_loss = torch.nn.functional.kl_div(video_logits, skeleton_logits)
+
+        total_loss = classification_loss + distillation_loss
         total_loss = total_loss / config.TRAIN.ACCUMULATION_STEPS
 
         if config.TRAIN.ACCUMULATION_STEPS == 1:
@@ -187,6 +191,9 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")
 
 
+
+
+
 @torch.no_grad()
 def validate(val_loader, text_labels, model, config):
     model.eval()
@@ -201,6 +208,7 @@ def validate(val_loader, text_labels, model, config):
             _image = batch_data["imgs"]
             label_id = batch_data["label"]
             label_id = label_id.reshape(-1)
+            skeleton_sequence = batch_data["hformer_data"].cuda(non_blocking=True)
 
             b, tn, c, h, w = _image.size()
             t = config.DATA.NUM_FRAMES
@@ -216,9 +224,9 @@ def validate(val_loader, text_labels, model, config):
                 if config.TRAIN.OPT_LEVEL == 'O2':
                     image_input = image_input.half()
                 
-                output = model(image_input, text_inputs)
+                video_logits, skeleton_logits = model(image_input, text_inputs, skeleton_sequence)
                 
-                similarity = output.view(b, -1).softmax(dim=-1)
+                similarity = video_logits.view(b, -1).softmax(dim=-1)
                 tot_similarity += similarity
 
             values_1, indices_1 = tot_similarity.topk(1, dim=-1)
@@ -239,7 +247,7 @@ def validate(val_loader, text_labels, model, config):
 
             if idx % config.PRINT_FREQ == 0 or idx == len(val_loader)-1:
                 logger.info(
-                    f'Test: [{idx}/{len(val_loader)}]\t'
+                    f'These results only use video and text: Test: [{idx}/{len(val_loader)}]\t'
                     f'Acc@1: {acc1_meter.avg:.3f}\t'
                     f'mCA: {mca_meter.mca:.3f}\t'
                 )
