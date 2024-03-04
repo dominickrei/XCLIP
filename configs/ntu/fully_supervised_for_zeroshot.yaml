@@ -1,0 +1,33 @@
+DATA:
+    DATASET: ntu110
+    INPUT_SIZE: 224
+    LABEL_LIST: /data/dreilly1/X-CLIP/labels/ntu_110-10_base_class_labels.csv
+    NUM_CLASSES: 110
+    NUM_FRAMES: 32
+    # ROOT: /data/ntu/NTU60_224x224/rgb
+    TRAIN_FILE: /data/ntu/csvs/base_2_novel/zsl_110-10_ntu120_base_train_data.csv
+    VAL_FILE: /data/ntu/csvs/base_2_novel/zsl_110-10_ntu120_base_val_data.csv
+
+SAVE_FREQ: 5 #20 #15
+MODEL:
+    ARCH: ViT-B/16
+    # POSE_MODEL: 'trainers.Hyperformer.Hyperformer_Model'
+    # GRAPH: 'graph.ntu_rgb_d.Graph'
+    # graph_args:
+    # LABELING_MODE: 'spatial'
+    # JOINT_LABEL: [0, 4, 2, 2, 2, 2, 1, 1, 2, 2, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 1, 0, 1, 0, 1] # this isnt used in the code
+
+TRAIN:
+    EPOCHS: 10 # change from 30
+    BATCH_SIZE: 4 # effective batch size should be 256
+    ACCUMULATION_STEPS: 8
+    LR: 8.0e-06
+    WARMUP_EPOCHS: 5 #15
+# TEST:
+#     Nothing
+# TRAINER:
+#   ViFi_CLIP:
+#     ZS_EVAL: False # Make True only during test mode to evaluate zero-shot vanilla CLIP performance
+#     USE: "both" # both refers to complete fine-tuning of CLIP (text+image encoders)
+
+# python -m torch.distributed.launch --nproc_per_node=8 main.py -cfg ./configs/ntu/fully_supervised_for_zeroshot.yaml --output ./work_dirs/zeroshot-pretraining_ntu110_xclip/
