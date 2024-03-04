@@ -19,8 +19,8 @@ MODEL:
 
 TRAIN:
     EPOCHS: 10 # change from 30
-    BATCH_SIZE: 4 # effective batch size should be 256
-    ACCUMULATION_STEPS: 8
+    BATCH_SIZE: 2 # effective batch size should be 256
+    ACCUMULATION_STEPS: 16
     LR: 8.0e-06
     WARMUP_EPOCHS: 5 #15
 # TEST:

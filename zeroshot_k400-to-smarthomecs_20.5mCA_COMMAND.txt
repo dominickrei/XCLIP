@@ -1,1 +1,4 @@
-python -m torch.distributed.launch --nproc_per_node=7 --master_port 29994 main.py -cfg configs/smarthome/32_8.yaml --output work_dirs/smarthome_cs_zeroshot-k400 --only_test --resume /data/dreilly1/X-CLIP/weights/xclipb-16_32frame_224res_k400trained.pth --opts TEST.NUM_CLIP 10
+python -m torch.distributed.launch --nproc_per_node=8 --master_port 29994 main.py -cfg configs/smarthome/32_8.yaml --output work_dirs/smarthome_cs_zeroshot-k400 --only_test --resume /data/dreilly1/X-CLIP/weights/xclipb-16_32frame_224res_k400trained.pth --opts TEST.NUM_CLIP 10
+
+
+python -m torch.distributed.launch --nproc_per_node=8 --master_port 29995 main.py -cfg configs/smarthome/32_8.yaml --output work_dirs/smarthome_cs_zeroshot-k400 --only_test --resume /data/dreilly1/X-CLIP/weights/xclipb-16_32frame_224res_k400trained.pth --opts TEST.NUM_CLIP 10
