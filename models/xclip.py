@@ -45,15 +45,15 @@ class XCLIP(CLIP):
         )
         
         ## For the skeleton based part of the model
-        self.prompts_generator_skeleton = VideoSpecificPrompt(layers=prompts_layers, embed_dim=embed_dim, alpha=prompts_alpha,)
+        # self.prompts_generator_skeleton = VideoSpecificPrompt(layers=prompts_layers, embed_dim=embed_dim, alpha=prompts_alpha,)
         self.skeleton_logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-        # self.transformer_skeleton = Transformer(
-        #     width=transformer_width,
-        #     layers=transformer_layers,
-        #     heads=transformer_heads,
-        #     attn_mask=self.build_attention_mask()
-        # )
+        self.transformer_skeleton = Transformer(
+            width=transformer_width,
+            layers=transformer_layers,
+            heads=transformer_heads,
+            attn_mask=self.build_attention_mask()
+        )
         # self.ln_final_skeleton = LayerNorm(transformer_width)
         # self.text_projection_skeleton = nn.Parameter(torch.empty(transformer_width, embed_dim))
 
@@ -122,13 +122,13 @@ class XCLIP(CLIP):
             # x.shape = [batch_size, n_ctx, transformer.width]
             # take features from the eot embedding (eot_token is the highest number in each sequence)
             x = x[torch.arange(x.shape[0]), eos_indx] @ self.text_projection
-        # else:
-        #     x = self.transformer_skeleton(x)
-        #     x = x.permute(1, 0, 2)  # LND -> NLD
-        #     x = self.ln_final_skeleton(x)
-        #     # x.shape = [batch_size, n_ctx, transformer.width]
-        #     # take features from the eot embedding (eot_token is the highest number in each sequence)
-        #     x = x[torch.arange(x.shape[0]), eos_indx] @ self.text_projection_skeleton
+        else:
+            x = self.transformer_skeleton(x)
+            x = x.permute(1, 0, 2)  # LND -> NLD
+            x = self.ln_final_skeleton(x)
+            # x.shape = [batch_size, n_ctx, transformer.width]
+            # take features from the eot embedding (eot_token is the highest number in each sequence)
+            x = x[torch.arange(x.shape[0]), eos_indx] @ self.text_projection_skeleton
         
         x = x.reshape(K, -1)
         return x
@@ -168,11 +168,14 @@ class XCLIP(CLIP):
         if self.use_cache:
             text_features = self.cache_text(text)
         else:
-            text_features = self.encode_text(text)
+            text_features = self.encode_text(text, which_encoder='visual')
+            skeleton_text_features = self.encode_text(text, which_encoder='skeleton')
         
-        initial_text_features = text_features.unsqueeze(0).expand(b, -1, -1)
-        text_features = initial_text_features + self.prompts_generator(initial_text_features, img_features) # video-specific prompting forward
-        skeleton_text_features = initial_text_features + self.prompts_generator_skeleton(initial_text_features, skeleton_features) # skeleton-specific prompting forward
+        text_features = text_features.unsqueeze(0).expand(b, -1, -1)
+        text_features = text_features + self.prompts_generator(text_features, img_features) # video-specific prompting forward
+
+        skeleton_text_features = skeleton_text_features.unsqueeze(0).expand(b, -1, -1)
+        # skeleton_text_features = skeleton_text_features + self.prompts_generator_skeleton(skeleton_text_features, skeleton_features) # skeleton-specific prompting forward
            
         video_features = video_features / video_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -241,6 +244,23 @@ def build_model(state_dict: dict, T=8, droppath=0., use_checkpoint=False, logger
             # if there is a key with 'transformer' duplicate it to 'transformer_skeleton'
             if "transformer" in key:
                 state_dict[key.replace("transformer", "transformer_skeleton")] = state_dict[key]
+
+    # Very big hack to load the skeleton encoder and text encoder weights
+    warnings.warn('Hardcoded loading of skeleton encoder weights')
+    poseclip_weights = torch.load('/data/dreilly1/X-CLIP/weights/poseclip_weights_ntu110.pth')['model']
+    for key in list(poseclip_weights.keys()):
+        state_dict['skeleton_encoder.clip_projector.weight'] = poseclip_weights['module.hyperformer_model.fc2.weight']
+        state_dict['skeleton_encoder.clip_projector.bias'] = poseclip_weights['module.hyperformer_model.fc2.bias']
+
+        if 'module.hyperformer_model' in key:
+            new_key = key.replace('module.hyperformer_model.','skeleton_encoder.')
+            state_dict[new_key] = poseclip_weights[key]
+
+        if 'text_encoder' in key:
+            new_key = key.replace('module.text_encoder.','transformer_skeleton.')
+            state_dict[new_key] = poseclip_weights[key]
+
+    breakpoint()
 
     msg = model.load_state_dict(state_dict,strict=False)
     logger.info(f"load pretrained CLIP: {msg}")

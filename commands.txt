@@ -1,5 +1,9 @@
 ###### Zero shot on smarthome with kinetics 400
 python -m torch.distributed.launch --nproc_per_node=8 --master_port 29994 main.py -cfg configs/smarthome/vitb16_32frame_1view.yaml --output work_dirs/smarthome_cs_zeroshot-k400 --only_test --resume /data/dreilly1/X-CLIP/weights/xclipb-16_32frame_224res_k400trained.pth
 
+###### Fully supervised training of ntu110 using XCLIP with collab learning
+## Fully supervised learning is for zeroshot
+python -m torch.distributed.launch --nproc_per_node=8 --master_port 29994 main.py -cfg configs/ntu/ntu110.yaml --output work_dirs/zeroshot-pretraining_ntu110_xclip_collab-learning
+
 ## 1 GPU for debugging
 python -m torch.distributed.launch --nproc_per_node=1 --master_port 29994 main.py -cfg configs/smarthome/vitb16_32frame_1view.yaml --output work_dirs/TESTING --only_test --resume /data/dreilly1/X-CLIP/weights/xclipb-16_32frame_224res_k400trained.pth
