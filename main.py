@@ -150,7 +150,15 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
         video_logits, skeleton_logits = model(images, texts, skeleton_sequence)
 
         classification_loss = criterion(video_logits, label_id)
-        distillation_loss = torch.nn.functional.kl_div(video_logits, skeleton_logits)
+        
+        kl_in = torch.nn.functional.log_softmax(video_logits)
+        kl_target = torch.nn.functional.softmax(skeleton_logits)
+        distillation_loss = torch.nn.functional.kl_div(kl_in, kl_target)
+
+        ## Made an interesting observation with the above code
+        ## doing `distillation_loss = torch.nn.functional.kl_div(torch.nn.functional.log_softmax(video_logits), torch.nn.functional.softmax(skeleton_logits))`
+        ## does not work and returns nan loss. Im not sure if this was specific to my machine or if it will be reproducable in the future
+        # breakpoint()
 
         total_loss = classification_loss + distillation_loss
         total_loss = total_loss / config.TRAIN.ACCUMULATION_STEPS
@@ -186,6 +194,8 @@ def train_one_epoch(epoch, model, criterion, optimizer, lr_scheduler, train_load
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.9f}\t'
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})\t'
                 f'tot_loss {tot_loss_meter.val:.4f} ({tot_loss_meter.avg:.4f})\t'
+                f'classification loss {classification_loss.item():.4f}\t'
+                f'distillation loss {distillation_loss.item():.4f}\t'
                 f'mem {memory_used:.0f}MB')
     epoch_time = time.time() - start
     logger.info(f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}")

@@ -54,8 +54,8 @@ class XCLIP(CLIP):
             heads=transformer_heads,
             attn_mask=self.build_attention_mask()
         )
-        # self.ln_final_skeleton = LayerNorm(transformer_width)
-        # self.text_projection_skeleton = nn.Parameter(torch.empty(transformer_width, embed_dim))
+        self.ln_final_skeleton = LayerNorm(transformer_width)
+        self.text_projection_skeleton = nn.Parameter(torch.empty(transformer_width, embed_dim))
 
         print('initializing skeleton encoder')
         self.skeleton_encoder = Hyperformer('graph.ntu_rgb_d.Graph')
@@ -158,7 +158,10 @@ class XCLIP(CLIP):
 
     def forward(self, image, text, skeleton):
         # TODO: Fix the variable names in this function. The difference between visual-text and skeleton-text is not clear
-        skeleton_features = self.skeleton_encoder(skeleton)
+        if skeleton is None:
+            skeleton = torch.randn(image.shape[0], 3, 300, 25, 2).cuda()
+        else:
+            skeleton_features = self.skeleton_encoder(skeleton)
 
         b = image.shape[0]
         video_features, img_features = self.encode_video(image) 
@@ -175,7 +178,9 @@ class XCLIP(CLIP):
         text_features = text_features + self.prompts_generator(text_features, img_features) # video-specific prompting forward
 
         skeleton_text_features = skeleton_text_features.unsqueeze(0).expand(b, -1, -1)
-        # skeleton_text_features = skeleton_text_features + self.prompts_generator_skeleton(skeleton_text_features, skeleton_features) # skeleton-specific prompting forward
+
+        # Dont use skeleton prompt generator for now
+        ## skeleton_text_features = skeleton_text_features + self.prompts_generator_skeleton(skeleton_text_features, skeleton_features) # skeleton-specific prompting forward
            
         video_features = video_features / video_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -234,16 +239,18 @@ def build_model(state_dict: dict, T=8, droppath=0., use_checkpoint=False, logger
 
     # This is a random key, if it exists it means that the skeleton text encoder weights are included here
     # Otherwise, we intialize the skelton text encoder with the same weights as the visual text encoder
-    if not 'transformer_skeleton.resblocks.10.mlp.c_fc.weight' in state_dict:
-        # this initializes the skeleton text encoder with the same weights as the visual text encoder
-        state_dict['ln_final_skeleton.weight'] = state_dict['ln_final.weight']
-        state_dict['ln_final_skeleton.bias'] = state_dict['ln_final.bias']
-        state_dict['text_projection_skeleton'] = state_dict['text_projection']
+    # if not 'transformer_skeleton.resblocks.10.mlp.c_fc.weight' in state_dict:
+    #     # this initializes the skeleton text encoder with the same weights as the visual text encoder
+    #     state_dict['ln_final_skeleton.weight'] = state_dict['ln_final.weight']
+    #     state_dict['ln_final_skeleton.bias'] = state_dict['ln_final.bias']
+    #     state_dict['text_projection_skeleton'] = state_dict['text_projection']
 
-        for key in list(state_dict.keys()):
-            # if there is a key with 'transformer' duplicate it to 'transformer_skeleton'
-            if "transformer" in key:
-                state_dict[key.replace("transformer", "transformer_skeleton")] = state_dict[key]
+    #     for key in list(state_dict.keys()):
+    #         # if there is a key with 'transformer' duplicate it to 'transformer_skeleton'
+    #         if "transformer" in key and 'visual' not in key:
+    #             state_dict[key.replace("transformer", "transformer_skeleton")] = state_dict[key]
+
+    # breakpoint()
 
     # Very big hack to load the skeleton encoder and text encoder weights
     warnings.warn('Hardcoded loading of skeleton encoder weights')
@@ -252,19 +259,30 @@ def build_model(state_dict: dict, T=8, droppath=0., use_checkpoint=False, logger
         state_dict['skeleton_encoder.clip_projector.weight'] = poseclip_weights['module.hyperformer_model.fc2.weight']
         state_dict['skeleton_encoder.clip_projector.bias'] = poseclip_weights['module.hyperformer_model.fc2.bias']
 
+        state_dict['ln_final_skeleton.weight'] = poseclip_weights['module.text_encoder.ln_final.weight']
+        state_dict['ln_final_skeleton.bias'] = poseclip_weights['module.text_encoder.ln_final.bias']
+        state_dict['text_projection_skeleton'] = poseclip_weights['module.text_encoder.text_projection']
+
         if 'module.hyperformer_model' in key:
             new_key = key.replace('module.hyperformer_model.','skeleton_encoder.')
             state_dict[new_key] = poseclip_weights[key]
 
         if 'text_encoder' in key:
-            new_key = key.replace('module.text_encoder.','transformer_skeleton.')
+            new_key = key.replace('module.text_encoder.transformer','transformer_skeleton')
             state_dict[new_key] = poseclip_weights[key]
-
-    breakpoint()
 
     msg = model.load_state_dict(state_dict,strict=False)
     logger.info(f"load pretrained CLIP: {msg}")
+
+    # freeze all weights of skeletons named parameters
+    for name, param in model.named_parameters():
+        if 'skeleton' in name:
+            param.requires_grad = False
+
+    model.transformer_skeleton.eval()
+    model.skeleton_encoder.eval()
     
+
     return model.eval()
 
 
